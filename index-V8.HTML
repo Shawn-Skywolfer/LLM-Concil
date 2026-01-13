@@ -1,0 +1,841 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>贤者议会 (Council of Sages)</title>
+    
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <script type="importmap">
+    {
+        "imports": {
+            "react": "https://esm.sh/react@18.2.0",
+            "react-dom/client": "https://esm.sh/react-dom@18.2.0/client",
+            "lucide-react": "https://esm.sh/lucide-react@0.263.1"
+        }
+    }
+    </script>
+    
+    <style>
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .animate-spin { animation: spin 1s linear infinite; }
+        .animate-pulse { animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+        .prose p { margin-bottom: 0.5em; }
+        .prose ul { list-style-type: disc; padding-left: 1.2em; margin-bottom: 0.5em; }
+        .prose ol { list-style-type: decimal; padding-left: 1.2em; margin-bottom: 0.5em; }
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+        
+        .modal-overlay { animation: fadeIn 0.2s ease-out; }
+        .modal-content { animation: scaleIn 0.2s ease-out; }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes scaleIn { from { transform: scale(0.95); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+    </style>
+</head>
+<body class="bg-slate-50 text-slate-900">
+    <div id="root"></div>
+
+    <script type="text/babel" data-type="module">
+        import React, { useState, useEffect, useRef, useMemo, memo } from 'react';
+        import { createRoot } from 'react-dom/client';
+        import { 
+          Settings, MessageSquare, Users, Play, RotateCcw, Save, Trash2, Search, Cpu, 
+          CheckCircle2, AlertCircle, History, BrainCircuit, Edit3, Send, User, 
+          Info, Plug, Zap, Expand, ChevronDown, ChevronRight, Lightbulb, Plus, 
+          Download, FileText, RefreshCw, LayoutGrid, List, X, Maximize2, Filter,
+          ToggleLeft, ToggleRight, Mic2, Star, Feather, UserPlus, Cloud, UploadCloud, LogOut, Sliders, Wrench, Square
+        } from 'lucide-react';
+
+        const DEFAULT_BASE_URL = "https://api.openai.com/v1";
+        const FALLBACK_AGENTS_POOL = [
+          { name: "查理·芒格", description: "反向思维，极度理性，规避风险，普世智慧。", color: "bg-blue-100 border-blue-300 text-blue-900" },
+          { name: "埃隆·马斯克", description: "第一性原理，激进创新，多行星物种。", color: "bg-purple-100 border-purple-300 text-purple-900" },
+          { name: "苏格拉底", description: "反诘法，承认无知，寻求本质。", color: "bg-amber-100 border-amber-300 text-amber-900" },
+          { name: "凯文·凯利", description: "科技乐观主义，技术进化，失控。", color: "bg-rose-100 border-rose-300 text-rose-900" },
+          { name: "纳瓦尔", description: "现代斯多葛，财富杠杆，极简理性。", color: "bg-emerald-100 border-emerald-300 text-emerald-900" }
+        ];
+        const generateId = () => Math.random().toString(36).substr(2, 9);
+        const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+        // --- UI Components ---
+        const AutoResizeTextarea = ({ value, onChange, onEnter, placeholder, className, disabled }) => {
+            const textareaRef = useRef(null);
+            useEffect(() => {
+                if (textareaRef.current) {
+                    textareaRef.current.style.height = 'auto';
+                    textareaRef.current.style.height = `${textareaRef.current.scrollHeight}px`;
+                }
+            }, [value]);
+            const handleKeyDown = (e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    if (onEnter) onEnter();
+                }
+            };
+            return (
+                <textarea ref={textareaRef} value={value} onChange={onChange} onKeyDown={handleKeyDown} placeholder={placeholder} className={className} disabled={disabled} rows={1} style={{ resize: 'none', overflow: 'hidden', minHeight: '44px' }} />
+            );
+        };
+
+        const Modal = ({ isOpen, onClose, children, maxWidth = "max-w-4xl" }) => {
+            if (!isOpen) return null;
+            return (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 modal-overlay bg-black/50 backdrop-blur-sm" onClick={onClose}>
+                    <div className={`bg-white rounded-2xl shadow-2xl w-full ${maxWidth} max-h-[90vh] overflow-hidden flex flex-col modal-content`} onClick={e => e.stopPropagation()}>
+                        <div className="flex justify-end p-2 border-b border-gray-100 sticky top-0 bg-white z-10">
+                            <button onClick={onClose} className="p-2 hover:bg-gray-100 rounded-full transition-colors"><X className="w-5 h-5 text-gray-500" /></button>
+                        </div>
+                        <div className="flex-1 overflow-y-auto p-6 md:p-8">
+                            {children}
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        // --- Message Card Component ---
+        const MessageCard = memo(({ msg, onSelect }) => {
+             const isAgent = msg.role === 'agent';
+             const isMod = msg.role === 'moderator';
+             const isSummary = isMod && (msg.text.length > 50 || msg.text.includes('\n'));
+             let borderColor = "border-gray-200", bgColor = "bg-white", iconColor = "bg-gray-100 text-gray-600";
+             if (isMod) {
+                 if (isSummary) { borderColor = "border-amber-200 ring-2 ring-amber-100"; bgColor = "bg-amber-50/50"; iconColor = "bg-amber-500 text-white"; }
+                 else { borderColor = "border-indigo-200 ring-2 ring-indigo-50"; bgColor = "bg-indigo-50/50"; iconColor = "bg-indigo-600 text-white"; }
+             } else if(msg.style && msg.style.includes("border-")) { const match = msg.style.match(/border-(\w+-\d+)/); if(match) borderColor = `border-${match[1]}`; }
+
+             return (
+                <div className={`${bgColor} p-3 rounded-xl border ${borderColor} shadow-sm hover:shadow-md transition-all flex flex-col h-full group relative`}>
+                    <div className="flex-1 cursor-pointer" onClick={() => onSelect(msg)}>
+                        <div className="flex items-center gap-2 mb-2">
+                            <div className={`w-6 h-6 rounded-full flex items-center justify-center font-bold text-[10px] ${iconColor}`}>{msg.role === 'user' ? <User className="w-3 h-3"/> : (isMod ? (isSummary ? <Star className="w-3 h-3"/> : <Mic2 className="w-3 h-3"/>) : msg.sender[0])}</div>
+                            <span className={`font-bold text-xs truncate ${isMod ? 'text-indigo-900' : 'text-slate-700'}`}>{msg.sender}</span>
+                            {msg.reasoning && <Lightbulb className="w-3 h-3 text-amber-400 ml-auto" />}
+                        </div>
+                        <div className={`text-xs line-clamp-6 leading-relaxed ${isMod ? 'text-slate-800 font-medium' : 'text-gray-600'}`}>{msg.text || <span className="animate-pulse">Thinking...</span>}</div>
+                    </div>
+                    <div className="mt-2 pt-2 border-t border-gray-100 flex justify-between items-center text-[10px] text-gray-400">
+                        <span>{new Date(msg.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
+                        <button onClick={(e) => { e.stopPropagation(); onSelect(msg); }} className="flex items-center gap-1 text-indigo-500 hover:text-indigo-700 font-medium px-2 py-1 rounded hover:bg-indigo-50 transition-colors">展开阅读 <Maximize2 className="w-3 h-3" /></button>
+                    </div>
+                </div>
+             );
+        }, (prev, next) => prev.msg.text === next.msg.text && prev.msg.reasoning === next.msg.reasoning);
+
+        const MessageBubble = ({ msg }) => {
+            const [expandReasoning, setExpandReasoning] = useState(false);
+            if (msg.role === 'system') return <div className="flex items-center gap-4 opacity-50 my-2"><div className="h-px bg-gray-300 flex-1"></div><span className="text-xs text-gray-500">{msg.text}</span><div className="h-px bg-gray-300 flex-1"></div></div>;
+            const isMod = msg.role === 'moderator';
+            const isUser = msg.role === 'user';
+            return (
+              <div className={`max-w-[90%] w-full rounded-2xl p-5 relative ${isMod ? 'bg-slate-800 text-white shadow-xl' : isUser ? 'bg-indigo-600 text-white shadow-md' : 'bg-white border border-gray-200 shadow-sm'}`}>
+                <div className="flex items-center gap-2 mb-3 pb-2 border-b border-white/10 border-gray-100"><span className="font-bold text-sm">{msg.sender}</span></div>
+                {msg.reasoning && (<div className="mb-3"><button onClick={() => setExpandReasoning(!expandReasoning)} className={`flex items-center gap-1 text-xs font-bold uppercase tracking-wider mb-1 hover:opacity-80 transition-opacity ${isMod || isUser ? 'text-indigo-300' : 'text-slate-400'}`}><Lightbulb className="w-3 h-3" /> 思考过程 {expandReasoning ? <ChevronDown className="w-3 h-3"/> : <ChevronRight className="w-3 h-3"/>}</button>{expandReasoning && (<div className={`text-xs p-3 rounded leading-relaxed whitespace-pre-wrap ${isMod || isUser ? 'bg-white/10' : 'bg-slate-50 text-slate-500 border-l-2 border-slate-200'}`}>{msg.reasoning}</div>)}</div>)}
+                <div className={`prose prose-sm max-w-none ${isMod || isUser ? 'prose-invert' : ''}`}><p className="whitespace-pre-wrap leading-relaxed">{msg.text || <span className="animate-pulse">...</span>}</p></div>
+              </div>
+            );
+        };
+
+        // --- Main App ---
+        function CouncilOfSages() {
+          const [config, setConfig] = useState({
+            baseUrl: '', apiKey: '', model: 'gpt-3.5-turbo', moderatorModel: 'gpt-3.5-turbo',
+            deepDebate: false, expandedCouncil: false, debateRounds: 2,
+            agentStylePrompt: "", specifyAgents: false, googleClientId: '' 
+          });
+          const [customAgentNames, setCustomAgentNames] = useState(Array(5).fill(''));
+          const [availableModels, setAvailableModels] = useState([]);
+          const [isSettingsOpen, setIsSettingsOpen] = useState(true);
+          const [connectionStatus, setConnectionStatus] = useState('idle');
+          const [errorMessage, setErrorMessage] = useState('');
+          const [manualModelInput, setManualModelInput] = useState(true);
+          const [modelFilter, setModelFilter] = useState(''); 
+          const [modFilter, setModFilter] = useState(''); 
+          const [viewMode, setViewMode] = useState('board'); 
+
+          // Google Drive State
+          const [isGoogleSignedIn, setIsGoogleSignedIn] = useState(false);
+          const [googleToken, setGoogleToken] = useState(null);
+          const [driveStatus, setDriveStatus] = useState('idle'); 
+
+          const [topic, setTopic] = useState('');
+          const [sessions, setSessions] = useState([]);
+          const [currentSessionId, setCurrentSessionId] = useState(null);
+          const [agents, setAgents] = useState([]);
+          const [transcript, setTranscript] = useState([]);
+          const [isProcessing, setIsProcessing] = useState(false);
+          const [stage, setStage] = useState('idle');
+          const [userInput, setUserInput] = useState('');
+          const [selectedMsg, setSelectedMsg] = useState(null);
+
+          const scrollRef = useRef(null);
+          const contextRef = useRef([]);
+          const activeSessionIdRef = useRef(null);
+          const abortControllerRef = useRef(null); // Ref for abort controller
+
+          useEffect(() => {
+            const savedConfig = localStorage.getItem('council_config');
+            if (savedConfig) setConfig(JSON.parse(savedConfig));
+            const savedSessions = localStorage.getItem('council_sessions');
+            if (savedSessions) setSessions(JSON.parse(savedSessions));
+            
+            const script = document.createElement('script');
+            script.src = "https://accounts.google.com/gsi/client";
+            script.async = true;
+            script.defer = true;
+            document.body.appendChild(script);
+            return () => { if (document.body.contains(script)) document.body.removeChild(script); }
+          }, []);
+
+          useEffect(() => { localStorage.setItem('council_config', JSON.stringify(config)); }, [config]);
+          useEffect(() => { localStorage.setItem('council_sessions', JSON.stringify(sessions)); }, [sessions]);
+
+          useEffect(() => {
+            if (scrollRef.current && viewMode === 'list') {
+                scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+            }
+          }, [transcript, stage, isProcessing, viewMode]);
+
+          // --- Google Drive Logic ---
+          const handleGoogleLogin = () => {
+              if (!config.googleClientId) { alert("请先在设置底部配置 Google Client ID"); setIsSettingsOpen(true); return; }
+              if (!window.google) { alert("Google 脚本加载中，请稍后"); return; }
+              const client = window.google.accounts.oauth2.initTokenClient({
+                  client_id: config.googleClientId,
+                  scope: 'https://www.googleapis.com/auth/drive.file',
+                  callback: (tokenResponse) => {
+                      if (tokenResponse && tokenResponse.access_token) {
+                          setGoogleToken(tokenResponse.access_token);
+                          setIsGoogleSignedIn(true);
+                      }
+                  },
+              });
+              client.requestAccessToken();
+          };
+
+          const uploadToDrive = async () => {
+              if (!googleToken) { handleGoogleLogin(); return; }
+              setDriveStatus('uploading');
+              try {
+                  const fileContent = JSON.stringify(sessions, null, 2);
+                  const fileData = new Blob([fileContent], { type: 'application/json' });
+                  const metadata = { name: `council_backup_${new Date().toISOString().slice(0,10)}.json`, mimeType: 'application/json' };
+                  const form = new FormData();
+                  form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
+                  form.append('file', fileData);
+
+                  const res = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
+                      method: 'POST', headers: { 'Authorization': `Bearer ${googleToken}` }, body: form
+                  });
+                  if (!res.ok) throw new Error(await res.text());
+                  setDriveStatus('success'); setTimeout(() => setDriveStatus('idle'), 3000);
+              } catch (error) {
+                  console.error("Drive Upload Error:", error); setDriveStatus('error');
+                  alert(`上传失败: ${error.message}\n请检查 Authorized Origins 配置。`);
+              }
+          };
+
+          const handleGoogleLogout = () => {
+              if (googleToken && window.google) {
+                  window.google.accounts.oauth2.revoke(googleToken, () => { setGoogleToken(null); setIsGoogleSignedIn(false); });
+              } else { setGoogleToken(null); setIsGoogleSignedIn(false); }
+          };
+
+          // --- Logic Helpers ---
+          const updateSessionInHistory = (sessionId, dataToUpdate) => {
+              if (!sessionId) return;
+              setSessions(prev => prev.map(s => s.id === sessionId ? { ...s, ...dataToUpdate } : s));
+          };
+
+          const updateMessage = (msgId, newText, newReasoning) => {
+            setTranscript(prev => prev.map(msg => msg.id === msgId ? { ...msg, text: newText, reasoning: newReasoning } : msg));
+          };
+
+          const finalizeMessage = (msgId, finalText, finalReasoning) => {
+             setTranscript(prev => prev.map(msg => msg.id === msgId ? { ...msg, text: finalText, reasoning: finalReasoning } : msg));
+             const activeId = activeSessionIdRef.current;
+             if (activeId) {
+                 setSessions(prevSessions => {
+                     return prevSessions.map(session => {
+                         if (session.id === activeId) {
+                             const existingTranscript = session.transcript ? [...session.transcript] : [];
+                             const msgIndex = existingTranscript.findIndex(m => m.id === msgId);
+                             const updatedMsg = { 
+                                 id: msgId, text: finalText, reasoning: finalReasoning, timestamp: Date.now(),
+                                 role: existingTranscript[msgIndex]?.role || 'unknown',
+                                 sender: existingTranscript[msgIndex]?.sender || 'Unknown',
+                                 style: existingTranscript[msgIndex]?.style
+                             };
+                             if (msgIndex !== -1) existingTranscript[msgIndex] = { ...existingTranscript[msgIndex], text: finalText, reasoning: finalReasoning };
+                             else existingTranscript.push(updatedMsg);
+                             return { ...session, transcript: existingTranscript };
+                         }
+                         return session;
+                     });
+                 });
+             }
+          };
+
+          const addToTranscript = (sender, role, text, style = '', reasoning = '') => {
+            const id = generateId();
+            const msg = { id, sender, role, text, reasoning, style, timestamp: Date.now() };
+            setTranscript(prev => [...prev, msg]);
+            const prefix = role === 'user' ? `[用户介入]: ` : `${sender}: `;
+            contextRef.current.push(`${prefix}${text}`);
+            const activeId = activeSessionIdRef.current;
+            if (activeId) {
+                setSessions(prev => prev.map(s => {
+                    if (s.id === activeId) return { ...s, transcript: [...(s.transcript || []), msg] };
+                    return s;
+                }));
+            }
+            return id;
+          };
+
+          // --- API ---
+          const getCleanUrl = () => config.baseUrl.trim().replace(/\/$/, "") || DEFAULT_BASE_URL;
+
+          const streamLLM = async (messages, specificModel, onToken, onReasoningToken) => {
+            const url = getCleanUrl() + "/chat/completions";
+            const modelToUse = specificModel || config.model;
+            
+            // Use the abort signal from the ref if available
+            const signal = abortControllerRef.current ? abortControllerRef.current.signal : null;
+            
+            try {
+              const res = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${config.apiKey.trim()}` },
+                body: JSON.stringify({ model: modelToUse, messages, temperature: 0.7, stream: true }),
+                signal // Pass the abort signal
+              });
+              if (!res.ok) { const err = await res.text(); throw new Error(`API Error ${res.status}: ${err}`); }
+              const reader = res.body.getReader();
+              const decoder = new TextDecoder("utf-8");
+              let buffer = '';
+              while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+                buffer = lines.pop();
+                for (const line of lines) {
+                  const t = line.trim();
+                  if (!t || t === 'data: [DONE]') continue;
+                  if (t.startsWith('data: ')) {
+                    try {
+                      const json = JSON.parse(t.slice(6));
+                      const delta = json.choices[0]?.delta;
+                      if (delta) {
+                        if (delta.reasoning_content && onReasoningToken) onReasoningToken(delta.reasoning_content);
+                        if (delta.content && onToken) onToken(delta.content);
+                      }
+                    } catch (e) {}
+                  }
+                }
+              }
+            } catch (error) {
+              // Ignore abort errors
+              if (error.name === 'AbortError') {
+                 console.log('Stream aborted');
+                 return; 
+              }
+              console.error("Stream Failed:", error);
+              if (error.name === 'TypeError' && error.message.includes('fetch')) throw new Error(`网络中断 (可能是CORS或超时)。建议检查网络或使用插件。`);
+              throw error;
+            }
+          };
+
+          const callLLM = async (messages, specificModel = null) => {
+            let fullText = "";
+            await streamLLM(messages, specificModel, (chunk) => fullText += chunk);
+            return fullText;
+          };
+
+          const fetchModels = async () => {
+             if (!config.apiKey) { setErrorMessage("请先输入 API Key"); setConnectionStatus('error'); return; }
+             setConnectionStatus('testing'); setErrorMessage('');
+             try {
+               const res = await fetch(`${getCleanUrl()}/models`, { headers: { 'Authorization': `Bearer ${config.apiKey.trim()}` } });
+               if (!res.ok) throw new Error("API Error");
+               const data = await res.json();
+               const ids = (data.data || []).map(m => m.id).sort();
+               if(ids.length === 0) throw new Error("No models");
+               setAvailableModels(ids); setConnectionStatus('success'); setManualModelInput(false);
+             } catch(e) {
+               console.warn(e); 
+               if (!manualModelInput) setManualModelInput(true);
+               setConnectionStatus('warning'); 
+               setErrorMessage(`连接测试失败: ${e.message}。请检查 URL/Key 或 CORS 设置。`);
+             }
+          };
+          
+          const testConnection = () => { fetchModels(); };
+
+          const filteredModels = useMemo(() => {
+              if (!modelFilter.trim()) return availableModels;
+              return availableModels.filter(m => m.toLowerCase().includes(modelFilter.toLowerCase()));
+          }, [availableModels, modelFilter]);
+
+          const filteredModModels = useMemo(() => { 
+              if (!modFilter.trim()) return availableModels;
+              return availableModels.filter(m => m.toLowerCase().includes(modFilter.toLowerCase()));
+          }, [availableModels, modFilter]);
+
+          // --- Stop Logic ---
+          const handleStop = () => {
+            if (abortControllerRef.current) {
+                abortControllerRef.current.abort();
+            }
+            setIsProcessing(false);
+            setStage('idle');
+            // Reset to show input, but keep topic
+            setTranscript([]); 
+            setAgents([]);
+            // Also reset session details to ensure we start fresh if they click start again
+            setCurrentSessionId(null);
+            activeSessionIdRef.current = null;
+            contextRef.current = [];
+          };
+
+          // --- Business Logic ---
+          const runDebateRound = async (currentAgents, roundType = 'initial') => {
+            setIsProcessing(true);
+            for (const agent of currentAgents) {
+              // Check abort before each agent starts
+              if (abortControllerRef.current?.signal.aborted) return;
+              
+              const msgId = addToTranscript(agent.name, 'agent', '', agent.style, '');
+              let attempts = 0; const maxAttempts = 3; let success = false;
+              while(attempts < maxAttempts && !success) {
+                if (abortControllerRef.current?.signal.aborted) return;
+                try {
+                  const fullHistory = contextRef.current;
+                  let contextStr = "";
+                  if (fullHistory.length > 25) {
+                      const topicMsg = fullHistory[0];
+                      const recentMsgs = fullHistory.slice(-20);
+                      contextStr = [topicMsg, "...(中间历史省略)...", ...recentMsgs].join("\n\n");
+                  } else { contextStr = fullHistory.join("\n\n"); }
+
+                  let instruction = roundType === 'initial' ? "发表初始核心观点，鲜明犀利。" : (config.deepDebate ? "深度辩论：必须引用他人观点，进行批判或反思。" : "交叉审议：回应他人观点。");
+                  const styleConstraint = config.agentStylePrompt ? `\n【全局语言风格约束】：${config.agentStylePrompt}\n请务必严格遵守上述风格约束。` : "";
+                  const prompt = `你现在是 ${agent.name}。人设: ${agent.description}。\n议题: "${topic}"。\n历史记录: """${contextStr}"""\n${instruction}\n${styleConstraint}\n要求: 完全使用中文。`;
+                  
+                  let currentText = ""; let currentReasoning = "";
+                  await streamLLM([{ role: "user", content: prompt }], config.model, 
+                    (t) => { currentText += t; updateMessage(msgId, currentText, currentReasoning); },
+                    (r) => { currentReasoning += r; updateMessage(msgId, currentText, currentReasoning); }
+                  );
+                  if (currentText.trim().length > 0) {
+                    contextRef.current.push(`${agent.name}: ${currentText}`);
+                    finalizeMessage(msgId, currentText, currentReasoning);
+                    success = true;
+                  } else { throw new Error("Empty response"); }
+                } catch (e) {
+                  if (abortControllerRef.current?.signal.aborted) return; // Silent exit on abort
+                  attempts++;
+                  if (attempts < maxAttempts) { updateMessage(msgId, `(重试 ${attempts}...)`, ""); await delay(1000 * attempts); }
+                  else { updateMessage(msgId, `(网络中断: ${e.message})`, ""); }
+                }
+              }
+            }
+            setIsProcessing(false);
+          };
+
+          const runConsensus = async () => {
+            if (abortControllerRef.current?.signal.aborted) return;
+            
+            const msgId = addToTranscript('主持人', 'moderator', '', 'bg-slate-800 text-white', '');
+            const fullHistory = contextRef.current;
+            let contextStr = "";
+            if (fullHistory.length > 30) {
+                const topicMsg = fullHistory[0];
+                const recentMsgs = fullHistory.slice(-25); 
+                contextStr = [topicMsg, "...(中间历史省略)...", ...recentMsgs].join("\n\n");
+            } else { contextStr = fullHistory.join("\n\n"); }
+
+            const prompt = `你是主持人。议题: "${topic}"。\n记录: """${contextStr}"""\n请总结争议焦点、深度洞察，并给出最终决议。中文。`;
+            let currentText = ""; let currentReasoning = "";
+            try {
+              await streamLLM([{ role: "user", content: prompt }], config.moderatorModel,
+                (t) => { currentText += t; updateMessage(msgId, currentText, currentReasoning); },
+                (r) => { currentReasoning += r; updateMessage(msgId, currentText, currentReasoning); }
+              );
+              contextRef.current.push(`主持人: ${currentText}`);
+              finalizeMessage(msgId, currentText, currentReasoning);
+            } catch (e) { 
+                if (!abortControllerRef.current?.signal.aborted) {
+                    updateMessage(msgId, `(生成失败: ${e.message})`, currentReasoning); 
+                }
+            }
+          };
+
+          const startNewSession = async () => {
+            if (!topic.trim()) return;
+            if (!config.apiKey) { setIsSettingsOpen(true); return; }
+            
+            // Create new controller
+            abortControllerRef.current = new AbortController();
+            
+            const newId = generateId();
+            const newSession = { id: newId, topic, date: new Date().toISOString(), agents: [], transcript: [] };
+            setCurrentSessionId(newId);
+            activeSessionIdRef.current = newId; 
+            setSessions(prev => [newSession, ...prev]);
+            setAgents([]); setTranscript([]);
+            contextRef.current = [`当前议题: ${topic}`];
+            setIsProcessing(true); setStage('recruiting');
+
+            try {
+              addToTranscript('系统', 'system', "正在组建贤者议会...");
+              const targetCount = config.expandedCouncil ? 5 : 3;
+              const countText = config.expandedCouncil ? "**5个**" : "**3个**";
+              
+              const specifiedAgents = config.specifyAgents ? customAgentNames.slice(0, targetCount).filter(n => n.trim()) : [];
+              const specifiedNamesStr = specifiedAgents.length > 0 ? specifiedAgents.join("、") : "无";
+              const specifiedInstruction = specifiedAgents.length > 0 
+                ? `\n重要：用户已指定必须包含以下议员：【${specifiedNamesStr}】。请优先为这些指定议员生成合适的人设描述。如果指定人数不足 ${targetCount} 人，请自动补充互补的专家来填满席位。`
+                : "";
+
+              const prompt = `议题: "${topic}"。识别 ${countText} 专家(Personas)。返回纯JSON数组: [{ "name": "...", "description": "..." }]${specifiedInstruction}`;
+              let recruited = [];
+              try {
+                // Pass null for signal since callLLM uses the same streamLLM logic which reads the ref
+                const raw = await callLLM([{ role: "user", content: prompt }], config.moderatorModel);
+                if (abortControllerRef.current?.signal.aborted) return;
+                
+                recruited = JSON.parse(raw.replace(/```json/g, '').replace(/```/g, '').trim());
+                if (recruited.length < targetCount) {
+                    const needed = targetCount - recruited.length;
+                    recruited = [...recruited, ...FALLBACK_AGENTS_POOL.filter(f => !recruited.some(r => r.name === f.name)).slice(0, needed)];
+                }
+              } catch (e) { recruited = FALLBACK_AGENTS_POOL.slice(0, targetCount); }
+              
+              if (abortControllerRef.current?.signal.aborted) return;
+
+              const colors = ["bg-blue-50 border-blue-200 text-blue-900", "bg-emerald-50 border-emerald-200 text-emerald-900", "bg-purple-50 border-purple-200 text-purple-900", "bg-amber-50 border-amber-200 text-amber-900", "bg-rose-50 border-rose-200 text-rose-900"];
+              const styledAgents = recruited.slice(0, targetCount).map((a, i) => ({ ...a, style: colors[i % colors.length] }));
+              
+              setAgents(styledAgents);
+              updateSessionInHistory(newId, { agents: styledAgents }); 
+              addToTranscript('系统', 'system', `议会组建完成: ${styledAgents.map(a => a.name).join(', ')}`);
+
+              setStage('debating');
+              const rounds = Math.max(1, parseInt(config.debateRounds) || 1);
+              for (let i = 1; i <= rounds; i++) {
+                if (abortControllerRef.current?.signal.aborted) return;
+                const title = i === 1 ? "第一轮：破题阐述" : (config.deepDebate ? `第${i}轮：深度辩论` : `第${i}轮：交叉审议`);
+                addToTranscript('主持人', 'moderator', title, "bg-slate-800 text-white");
+                await runDebateRound(styledAgents, i === 1 ? 'initial' : 'rebuttal');
+              }
+
+              if (abortControllerRef.current?.signal.aborted) return;
+              setStage('concluding');
+              addToTranscript('系统', 'system', "正在起草决议...");
+              await runConsensus();
+              setStage('finished');
+            } catch (error) {
+              if (!abortControllerRef.current?.signal.aborted) {
+                  addToTranscript('系统', 'system', `❌ 错误: ${error.message}`);
+                  setStage('error');
+              }
+            } finally { setIsProcessing(false); }
+          };
+
+          const handleUserSubmit = async () => {
+            if (!userInput.trim()) return;
+            const text = userInput; setUserInput('');
+            const msgId = addToTranscript('我 (用户)', 'user', text, 'bg-gray-100 border-gray-300 text-gray-800');
+            finalizeMessage(msgId, text, "");
+            if (!isProcessing && agents.length > 0) {
+                // Restart processing if user intervenes
+                abortControllerRef.current = new AbortController();
+                setIsProcessing(true);
+                setStage('debating');
+                addToTranscript('系统', 'system', "收到新观点，继续讨论...");
+                await runDebateRound(agents, 'rebuttal');
+                setStage('finished');
+                setIsProcessing(false);
+            }
+          };
+
+          const continueDebate = async () => {
+            setStage('debating');
+            addToTranscript('系统', 'system', "收到新观点，继续讨论...");
+            await runDebateRound(agents, 'rebuttal');
+            setStage('finished');
+          };
+
+          const deleteSession = (e, id) => {
+            e.stopPropagation();
+            setSessions(prev => prev.filter(s => s.id !== id));
+            if (currentSessionId === id) {
+                setTopic(''); setCurrentSessionId(null); setAgents([]); setTranscript([]); activeSessionIdRef.current = null; contextRef.current = []; setStage('idle');
+            }
+          };
+
+          const loadSession = (session) => {
+            if (isProcessing) return;
+            setCurrentSessionId(session.id);
+            activeSessionIdRef.current = session.id; 
+            setTopic(session.topic);
+            setAgents(session.agents || []);
+            setTranscript(session.transcript || []);
+            const rebuilt = [`当前议题: ${session.topic}`];
+            (session.transcript || []).forEach(t => {
+               const prefix = t.role === 'user' ? `[用户介入]: ` : `${t.sender}: `;
+               rebuilt.push(`${prefix}${t.text}`);
+            });
+            contextRef.current = rebuilt;
+            setStage((session.transcript || []).length > 0 ? 'finished' : 'idle');
+            setIsSettingsOpen(false);
+          };
+
+          const downloadSingleSession = (targetSession = null) => {
+            let data = []; let title = "未命名议题";
+            if (targetSession) { data = targetSession.transcript || []; title = targetSession.topic; }
+            else if (activeSessionIdRef.current) {
+                const s = sessions.find(x => x.id === activeSessionIdRef.current);
+                if (s && s.transcript) { data = s.transcript; title = s.topic; }
+                else { data = transcript; title = topic; }
+            } else { data = transcript; title = topic; }
+
+            if (!data || data.length === 0) { alert("下载失败：未找到有效对话记录。"); return; }
+            let content = `# 议题：${title}\n\n时间：${new Date().toLocaleString()}\n\n---\n\n`;
+            data.forEach(msg => { 
+                if(msg.role!=='system') {
+                    content += `### ${msg.sender}\n`;
+                    if (msg.reasoning) content += `> [思考] ${msg.reasoning.replace(/\n/g,'\n> ')}\n\n`;
+                    content += `${msg.text}\n\n`;
+                }
+            });
+            const url = URL.createObjectURL(new Blob([content], { type: 'text/markdown' }));
+            const a = document.createElement('a'); a.href = url; a.download = `贤者议会_${title.slice(0,10).replace(/[\\/:*?"<>|]/g, '')}.md`; a.click();
+          };
+
+          const downloadAllSessions = () => {
+            const url = URL.createObjectURL(new Blob([JSON.stringify(sessions)], { type: 'application/json' }));
+            const a = document.createElement('a'); a.href = url; a.download = `backup_${Date.now()}.json`; a.click();
+          };
+
+          // --- VIEW HELPERS ---
+          const structuredRounds = useMemo(() => {
+            const rounds = [];
+            let currentRound = { title: "开场", msgs: [] };
+            transcript.forEach(msg => {
+                const isMod = msg.role === 'moderator';
+                const isModContent = isMod && (msg.text.length > 50 || msg.text.includes('\n'));
+                const isRoundMarker = isMod && !isModContent;
+
+                if (isRoundMarker) {
+                    if (currentRound.msgs.length > 0) rounds.push(currentRound);
+                    let title = msg.text;
+                    if (title.includes("第一轮")) title = "第一轮：观点阐述";
+                    else if (title.includes("第二轮")) title = "第二轮：交叉辩论";
+                    else if (title.includes("决议") || title.includes("起草")) title = "最终决议 (起草中...)";
+                    currentRound = { title: title, msgs: [] };
+                } else if (isMod && isModContent) {
+                    if (currentRound.title !== "最终决议") {
+                         if (currentRound.msgs.length > 0) rounds.push(currentRound);
+                         currentRound = { title: "最终决议", msgs: [] };
+                    }
+                    currentRound.msgs.push(msg);
+                } else if (msg.role !== 'system') {
+                    currentRound.msgs.push(msg);
+                }
+            });
+            if (currentRound.msgs.length > 0) rounds.push(currentRound);
+            return rounds;
+          }, [transcript]);
+
+          return (
+            <div className="flex h-screen bg-slate-50 font-sans overflow-hidden">
+              {/* Sidebar */}
+              <div className="w-64 bg-white border-r border-gray-200 flex flex-col hidden md:flex">
+                <div className="p-4 border-b border-gray-100"><h1 className="text-lg font-bold flex items-center gap-2 text-indigo-600"><Users className="w-6 h-6" /> 贤者议会</h1></div>
+                <div className="p-2"><button onClick={() => {setTopic(''); setCurrentSessionId(null); setAgents([]); setTranscript([]); setStage('idle'); setIsSettingsOpen(false);}} className="w-full flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white py-2 rounded-lg text-sm font-medium transition-colors"><Plus className="w-4 h-4" /> 新增议题</button></div>
+                <div className="flex-1 overflow-y-auto p-2 space-y-2">
+                  {sessions.map(s => (
+                    <div key={s.id} onClick={() => loadSession(s)} className={`group p-3 rounded-lg cursor-pointer text-sm border transition-all ${currentSessionId === s.id ? 'bg-indigo-50 border-indigo-200 text-indigo-700' : 'bg-white border-transparent hover:bg-gray-50'}`}>
+                      <div className="font-medium truncate mb-1">{s.topic || "Untitled"}</div>
+                      <div className="flex justify-between text-xs opacity-70"><span>{new Date(s.date).toLocaleDateString()}</span><div className="flex gap-1"><button onClick={(e) => { e.stopPropagation(); downloadSingleSession(s); }} className="p-1 hover:bg-indigo-200 rounded"><Download className="w-3 h-3" /></button><button onClick={(e) => deleteSession(e, s.id)} className="p-1 hover:bg-red-100 hover:text-red-600 rounded"><Trash2 className="w-3 h-3" /></button></div></div>
+                    </div>
+                  ))}
+                </div>
+                <div className="p-3 border-t border-gray-200 bg-gray-50">
+                    <button onClick={downloadAllSessions} disabled={!sessions.length} className="w-full flex items-center justify-center gap-2 text-slate-600 text-xs font-medium mb-3"><Download className="w-3 h-3" /> 本地备份 (JSON)</button>
+                    <div className="pt-2 border-t border-gray-200">
+                        {isGoogleSignedIn ? (
+                            <div className="space-y-2">
+                                <div className="flex items-center justify-between text-xs text-green-700 font-medium px-1"><span>已连接 Google Drive</span><button onClick={handleGoogleLogout} title="注销"><LogOut className="w-3 h-3" /></button></div>
+                                <button onClick={uploadToDrive} disabled={driveStatus==='uploading'} className="w-full flex items-center justify-center gap-2 bg-indigo-100 hover:bg-indigo-200 text-indigo-700 text-xs font-medium py-1.5 rounded transition-colors">{driveStatus==='uploading'?<RotateCcw className="w-3 h-3 animate-spin"/>:<Cloud className="w-3 h-3"/>} 备份到云端</button>
+                                {driveStatus==='success' && <div className="text-[10px] text-center text-green-600">备份成功!</div>}
+                            </div>
+                        ) : (
+                            <button onClick={handleGoogleLogin} className="w-full flex items-center justify-center gap-2 text-slate-500 hover:text-indigo-600 text-xs font-medium transition-colors"><UploadCloud className="w-3 h-3" /> 连接 Google Drive</button>
+                        )}
+                    </div>
+                </div>
+              </div>
+
+              {/* Main */}
+              <div className="flex-1 flex flex-col min-w-0 bg-white">
+                <header className="h-14 border-b border-gray-200 flex justify-between items-center px-6 shrink-0 z-10 bg-white/80 backdrop-blur-sm sticky top-0">
+                  <div className="md:hidden font-bold text-indigo-600">贤者议会</div>
+                  <div className="flex items-center gap-2 bg-gray-100 rounded-lg p-1">
+                      <button onClick={() => setViewMode('list')} className={`p-1.5 rounded-md transition-all ${viewMode === 'list' ? 'bg-white shadow text-indigo-600' : 'text-gray-500 hover:text-gray-700'}`} title="列表流视图"><List className="w-4 h-4" /></button>
+                      <button onClick={() => setViewMode('board')} className={`p-1.5 rounded-md transition-all ${viewMode === 'board' ? 'bg-white shadow text-indigo-600' : 'text-gray-500 hover:text-gray-700'}`} title="结构化看板视图"><LayoutGrid className="w-4 h-4" /></button>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {transcript.length > 0 && <button onClick={() => downloadSingleSession()} className="p-2 rounded-full text-gray-500 hover:bg-indigo-50"><FileText className="w-5 h-5" /></button>}
+                    {isProcessing && <button onClick={handleStop} className="flex items-center gap-1 bg-red-50 text-red-600 hover:bg-red-100 px-3 py-1.5 rounded-full text-sm font-medium transition-colors border border-red-200"><Square className="w-3 h-3 fill-current" /> 停止研讨</button>}
+                    <button onClick={() => setIsSettingsOpen(!isSettingsOpen)} className="p-2 rounded-full hover:bg-gray-100 text-gray-500" title="全局设置 (云端备份)"><Settings className="w-5 h-5" /></button>
+                  </div>
+                </header>
+
+                <main className="flex-1 overflow-y-auto bg-slate-50/50" ref={scrollRef}>
+                  <div className="max-w-6xl mx-auto p-4 md:p-8 pb-24 min-h-full">
+                    {/* Main Settings (Now just for Cloud Backup) */}
+                    {isSettingsOpen && (
+                      <div className="bg-white p-6 rounded-xl border border-gray-200 mb-8 shadow-sm animate-in slide-in-from-top-2">
+                         <div className="flex justify-between items-center mb-6 border-b pb-2"><h2 className="text-xl font-bold flex items-center gap-2 text-slate-800"><Settings className="w-5 h-5" /> 全局设置</h2><button onClick={() => setIsSettingsOpen(false)} className="text-gray-400 hover:text-gray-600">收起</button></div>
+                         <div className="bg-gray-50 p-4 rounded-lg border border-gray-200">
+                             <div className="flex items-center gap-2 mb-2"><Cloud className="w-4 h-4 text-indigo-500"/><label className="block text-sm font-medium text-gray-700">云端备份配置 (Google Drive)</label></div>
+                             <input type="text" placeholder="Google Client ID (e.g., 123...apps.googleusercontent.com)" className="w-full p-2 border rounded mt-1 text-sm font-mono bg-white focus:bg-white" value={config.googleClientId} onChange={e => setConfig({...config, googleClientId: e.target.value})} />
+                             <p className="text-[10px] text-gray-400 mt-1">需在 Google Cloud Console 创建 OAuth 2.0 Client ID，并添加本页面的 URL 到“已获授权的 JavaScript 来源”。</p>
+                         </div>
+                      </div>
+                    )}
+
+                    {transcript.length === 0 && !isProcessing && (
+                      <div className="flex flex-col items-center justify-center py-20 animate-in fade-in zoom-in duration-500">
+                        <div className="w-20 h-20 bg-indigo-100 text-indigo-600 rounded-3xl flex items-center justify-center mb-6 shadow-sm"><BrainCircuit className="w-10 h-10" /></div>
+                        <h2 className="text-3xl font-bold text-slate-800 mb-3">贤者议会</h2>
+                        <p className="text-slate-500 mb-10 max-w-md text-center">输入一个复杂议题，召唤 3-5 位顶尖思维模型为您进行深度剖析。</p>
+                        <div className="w-full max-w-2xl relative group">
+                          <div className="absolute -inset-1 bg-gradient-to-r from-indigo-500 to-purple-600 rounded-2xl blur opacity-25 group-hover:opacity-50 transition duration-1000"></div>
+                          <div className="relative bg-white rounded-2xl p-2 shadow-xl">
+                             <AutoResizeTextarea value={topic} onChange={(e) => setTopic(e.target.value)} onEnter={startNewSession} placeholder="例如：通用人工智能对人类就业的终极影响是什么？" className="w-full p-4 text-lg outline-none bg-transparent resize-none" />
+                             <div className="flex justify-between items-center px-4 pb-2 border-t border-gray-100 pt-2 mt-2">
+                                <button onClick={() => setConfig(prev => ({...prev, isSeminarConfigOpen: true}))} className="text-xs text-slate-500 hover:text-indigo-600 flex items-center gap-1 transition-colors px-2 py-1 rounded hover:bg-slate-100"><Wrench className="w-3 h-3" /> 研讨设置</button>
+                                <div className="flex items-center gap-3">
+                                   <span className="text-[10px] text-gray-300">Shift + Enter 换行</span>
+                                   <button onClick={startNewSession} disabled={!topic.trim() || !config.apiKey} className="bg-indigo-600 text-white px-6 py-2 rounded-xl hover:bg-indigo-700 disabled:bg-gray-300 transition-colors font-medium flex items-center gap-2"><Play className="w-4 h-4" /> 开始研讨</button>
+                                </div>
+                             </div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {transcript.length > 0 && viewMode === 'board' && (
+                        <div className="space-y-8 animate-in fade-in duration-300">
+                            <div className="text-center mb-4"><h2 className="text-2xl font-bold text-slate-800">{topic}</h2>{isProcessing && <div className="flex items-center justify-center gap-2 text-indigo-600 text-sm mt-2 animate-pulse"><Cpu className="w-4 h-4" /> 贤者正在思考中...</div>}</div>
+                            <div className="flex gap-6 overflow-x-auto pb-4 snap-x">{structuredRounds.map((round, idx) => (<div key={idx} className="flex-none w-80 md:w-96 flex flex-col gap-4 snap-start"><div className="font-bold text-slate-600 border-b-2 border-indigo-100 pb-2 mb-2 sticky top-0 bg-slate-50/95 backdrop-blur z-10 flex items-center gap-2"><span className="bg-indigo-100 text-indigo-700 text-xs px-2 py-1 rounded-full">Phase {idx+1}</span>{round.title.replace(/[:：].*$/, '')}</div><div className="flex flex-col gap-3">{round.msgs.map(msg => (<MessageCard key={msg.id} msg={msg} onSelect={setSelectedMsg} />))}</div></div>))}</div>
+                        </div>
+                    )}
+
+                    {transcript.length > 0 && viewMode === 'list' && (
+                        <div className="space-y-6 animate-in fade-in duration-300 max-w-3xl mx-auto"><div className="text-center mb-8 border-b border-gray-200 pb-6"><h2 className="text-2xl font-bold text-slate-800">{topic}</h2></div>{transcript.map(msg => <MessageBubble key={msg.id} msg={msg} />)}{isProcessing && stage === 'recruiting' && <div className="text-center text-gray-400 animate-pulse">组建团队中...</div>}</div>
+                    )}
+                  </div>
+                </main>
+
+                {(transcript.length > 0 || isProcessing) && (
+                  <div className="border-t border-gray-200 bg-white p-4 sticky bottom-0 z-20 shadow-[0_-5px_20px_rgba(0,0,0,0.05)]">
+                    <div className="max-w-4xl mx-auto flex gap-2 items-end">
+                      <AutoResizeTextarea value={userInput} onChange={(e) => setUserInput(e.target.value)} onEnter={handleUserSubmit} placeholder="插入讨论或追问..." className="flex-1 p-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none transition bg-white" />
+                      <button onClick={handleUserSubmit} disabled={!userInput.trim()} className="p-3 bg-indigo-600 text-white rounded-xl hover:bg-indigo-700 disabled:bg-gray-300 transition-colors h-[46px] w-[46px] flex items-center justify-center shrink-0"><Send className="w-5 h-5" /></button>
+                    </div>
+                  </div>
+                )}
+
+                {/* --- SEMINAR SETTINGS MODAL --- */}
+                <Modal isOpen={config.isSeminarConfigOpen} onClose={() => setConfig({...config, isSeminarConfigOpen: false})} maxWidth="max-w-3xl">
+                    <div className="space-y-8">
+                        <div className="flex items-center gap-2 mb-4 border-b border-gray-100 pb-4">
+                            <Wrench className="w-6 h-6 text-indigo-600" />
+                            <h2 className="text-2xl font-bold text-slate-800">研讨设置 (Seminar Config)</h2>
+                        </div>
+
+                        {/* 1. Core Model Config */}
+                        <div>
+                            <h3 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-4 flex items-center gap-2"><Cpu className="w-4 h-4"/> 核心模型配置</h3>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-slate-50 p-5 rounded-xl border border-gray-100">
+                                <div className="space-y-4">
+                                    <div><label className="text-sm font-medium text-gray-700">Base URL</label><input type="text" placeholder="https://api.aihubmix.com/v1" className="w-full p-2 border rounded mt-1 text-sm font-mono" value={config.baseUrl} onChange={e => setConfig({...config, baseUrl: e.target.value})} /></div>
+                                    <div><label className="text-sm font-medium text-gray-700">API Key</label><input type="password" placeholder="sk-..." className="w-full p-2 border rounded mt-1 text-sm font-mono" value={config.apiKey} onChange={e => setConfig({...config, apiKey: e.target.value})} /></div>
+                                    <div className="flex items-center gap-4 text-sm">
+                                        <button onClick={testConnection} className={`flex items-center gap-2 px-3 py-1.5 rounded-md border text-xs transition-colors ${manualModelInput ? 'bg-white border-indigo-200 text-indigo-600 hover:bg-indigo-50' : 'bg-slate-200 text-slate-700 border-transparent'}`}>{connectionStatus === 'testing' ? <RotateCcw className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />} {manualModelInput ? '测试连通性' : '测试连接 (获取列表)'}</button>
+                                        {connectionStatus === 'success' && <span className="text-green-600 flex items-center gap-1 text-xs"><CheckCircle2 className="w-3 h-3"/> 连接成功</span>}
+                                    </div>
+                                    {errorMessage && <div className="text-xs text-red-600 bg-red-50 p-2 rounded">{errorMessage}</div>}
+                                </div>
+                                <div className="space-y-4">
+                                    <div onClick={() => setConfig(prev => ({...prev, expandedCouncil: !prev.expandedCouncil}))} className={`p-3 border rounded cursor-pointer flex justify-between items-center ${config.expandedCouncil ? 'bg-indigo-50 border-indigo-300' : 'bg-white'}`}><span><Users className="w-4 h-4 inline mr-2 text-indigo-600"/> 扩容议会 (5人)</span><div className={`w-8 h-4 rounded-full relative transition-colors ${config.expandedCouncil ? 'bg-indigo-600' : 'bg-gray-300'}`}><div className={`absolute top-0.5 w-3 h-3 bg-white rounded-full transition-all ${config.expandedCouncil ? 'left-4.5' : 'left-0.5'}`} style={{left: config.expandedCouncil ? '18px' : '2px'}}/></div></div>
+                                    <div onClick={() => setConfig(prev => ({...prev, deepDebate: !prev.deepDebate}))} className={`p-3 border rounded cursor-pointer flex justify-between items-center ${config.deepDebate ? 'bg-indigo-50 border-indigo-300' : 'bg-white'}`}><span><Zap className="w-4 h-4 inline mr-2 text-amber-500"/> 深度辩论</span><div className={`w-8 h-4 rounded-full relative transition-colors ${config.deepDebate ? 'bg-indigo-600' : 'bg-gray-300'}`}><div className={`absolute top-0.5 w-3 h-3 bg-white rounded-full transition-all`} style={{left: config.deepDebate ? '18px' : '2px'}}/></div></div>
+                                    {config.deepDebate && <div className="flex items-center justify-between text-sm pl-2"><label>轮次:</label><input type="number" min="1" max="5" value={config.debateRounds} onChange={e => setConfig({...config, debateRounds: parseInt(e.target.value)})} className="w-16 p-1 border rounded text-center" /></div>}
+                                    
+                                    <div className="pt-2 border-t border-gray-200 grid grid-cols-2 gap-2">
+                                        <div><div className="flex justify-between items-center mb-1"><label className="text-xs font-medium text-gray-500">议员模型</label></div>{manualModelInput || availableModels.length === 0 ? (<input type="text" className="w-full p-2 border border-gray-300 rounded text-xs" placeholder="e.g. deepseek-reasoner" value={config.model} onChange={(e) => setConfig({...config, model: e.target.value})} />) : (<div className="relative"><input type="text" placeholder="筛选..." className="w-full p-1 mb-1 border border-gray-200 rounded text-[10px] bg-gray-50" value={modelFilter} onChange={(e) => setModelFilter(e.target.value)} /><select className="w-full p-2 border border-gray-300 rounded text-xs bg-white" value={config.model} onChange={(e) => setConfig({...config, model: e.target.value})}>{filteredModels.map(m => <option key={m} value={m}>{m}</option>)}</select></div>)}</div>
+                                        <div><div className="flex justify-between items-center mb-1"><label className="text-xs font-medium text-gray-500">主持人模型</label></div>{manualModelInput || availableModels.length === 0 ? (<input type="text" className="w-full p-2 border border-gray-300 rounded text-xs" placeholder="e.g. gpt-4" value={config.moderatorModel} onChange={(e) => setConfig({...config, moderatorModel: e.target.value})} />) : (<div className="relative"><input type="text" placeholder="筛选..." className="w-full p-1 mb-1 border border-gray-200 rounded text-[10px] bg-gray-50" value={modFilter} onChange={(e) => setModFilter(e.target.value)} /><select className="w-full p-2 border border-gray-300 rounded text-xs bg-white" value={config.moderatorModel} onChange={(e) => setConfig({...config, moderatorModel: e.target.value})}>{filteredModModels.map(m => <option key={m} value={m}>{m}</option>)}</select></div>)}</div>
+                                    </div>
+                                    <div className="flex justify-end"><button onClick={() => setManualModelInput(!manualModelInput)} className="flex items-center gap-1 text-[10px] text-indigo-600 hover:text-indigo-800 bg-indigo-50 px-2 py-1 rounded-md transition-colors">{manualModelInput ? <ToggleLeft className="w-3 h-3" /> : <ToggleRight className="w-3 h-3" />} {manualModelInput ? "切换列表" : "切换手动"}</button></div>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* 2. Advanced Thinking Config */}
+                        <div>
+                             <h3 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-4 flex items-center gap-2"><BrainCircuit className="w-4 h-4"/> 高级思维设定</h3>
+                             <div className="bg-slate-50 p-5 rounded-xl border border-gray-100 space-y-4">
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-2 flex items-center gap-2"><Feather className="w-4 h-4 text-indigo-500"/> 议员思维与语言风格 (Style Prompt)</label>
+                                    <textarea className="w-full p-3 border border-gray-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-indigo-500 outline-none transition h-20 resize-y" placeholder="例如：请使用通俗易懂、逻辑严密的专业中文..." value={config.agentStylePrompt} onChange={(e) => setConfig({...config, agentStylePrompt: e.target.value})} />
+                                </div>
+                                <div className="pt-4 border-t border-gray-200">
+                                    <div onClick={() => setConfig(prev => ({...prev, specifyAgents: !prev.specifyAgents}))} className={`p-3 border rounded cursor-pointer flex justify-between items-center ${config.specifyAgents ? 'bg-indigo-50 border-indigo-300' : 'bg-white'}`}><span><UserPlus className="w-4 h-4 inline mr-2 text-indigo-600"/> 指定议员名单 (可选)</span><div className={`w-8 h-4 rounded-full relative transition-colors ${config.specifyAgents ? 'bg-indigo-600' : 'bg-gray-300'}`}><div className={`absolute top-0.5 w-3 h-3 bg-white rounded-full transition-all ${config.specifyAgents ? 'left-4.5' : 'left-0.5'}`} style={{left: config.specifyAgents ? '18px' : '2px'}}/></div></div>
+                                    {config.specifyAgents && (
+                                        <div className="mt-3 grid grid-cols-2 md:grid-cols-3 gap-2 animate-in fade-in">
+                                            {Array(config.expandedCouncil ? 5 : 3).fill(0).map((_, i) => (
+                                                <input key={i} type="text" placeholder={`议员 ${i+1} (留空自动)`} className="p-2 border rounded text-xs" value={customAgentNames[i] || ''} onChange={(e) => { const newNames = [...customAgentNames]; newNames[i] = e.target.value; setCustomAgentNames(newNames); }} />
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                             </div>
+                        </div>
+
+                        <div className="flex justify-end pt-4">
+                            <button onClick={() => setConfig({...config, isSeminarConfigOpen: false})} className="bg-indigo-600 text-white px-6 py-2 rounded-lg hover:bg-indigo-700 transition-colors font-medium">完成设置</button>
+                        </div>
+                    </div>
+                </Modal>
+
+                <Modal isOpen={!!selectedMsg} onClose={() => setSelectedMsg(null)}>
+                    {selectedMsg && (
+                        <div className="space-y-6">
+                            <div className="flex items-center gap-4 border-b border-gray-100 pb-4">
+                                <div className={`w-12 h-12 rounded-full flex items-center justify-center font-bold text-xl ${selectedMsg.role === 'moderator' ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-600'}`}>{selectedMsg.sender[0]}</div>
+                                <div><h3 className="text-xl font-bold text-slate-900">{selectedMsg.sender}</h3><div className="text-sm text-gray-500 flex items-center gap-2">{new Date(selectedMsg.timestamp).toLocaleString()}{selectedMsg.role === 'agent' && <span className="bg-blue-50 text-blue-600 px-2 py-0.5 rounded text-xs">Council Member</span>}</div></div>
+                            </div>
+                            {selectedMsg.reasoning && (<div className="bg-amber-50 border border-amber-100 rounded-xl p-4 text-sm text-slate-700"><div className="font-bold text-amber-700 mb-2 flex items-center gap-2"><Lightbulb className="w-4 h-4"/> 深度思考过程</div><div className="whitespace-pre-wrap leading-relaxed opacity-90">{selectedMsg.reasoning}</div></div>)}
+                            <div className="prose prose-lg max-w-none text-slate-800 leading-loose"><p className="whitespace-pre-wrap">{selectedMsg.text}</p></div>
+                        </div>
+                    )}
+                </Modal>
+              </div>
+            </div>
+          );
+        }
+
+        const root = createRoot(document.getElementById('root'));
+        root.render(<CouncilOfSages />);
+    </script>
+</body>
+</html>
