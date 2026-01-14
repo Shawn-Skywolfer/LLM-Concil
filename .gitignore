@@ -13,3 +13,7 @@ Thumbs.db
 *.swp
 *.swo
 *~
+
+# Local content (not synced to GitHub)
+增长推广/
+问卷备份/
