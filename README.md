@@ -1,4 +1,4 @@
-# 贤者议会 (Council of Sages)
+# 贤者议会 (LLM Council)
 
 一个基于单文件 React 应用的 AI 多智能体辩论模拟器。用户可以输入复杂话题，系统会动态招募 3-5 位 AI 专家组成"贤者议会"，进行多轮辩论并最终达成共识。
 
@@ -100,4 +100,4 @@ LLM-Concil/
 
 ---
 
-**项目链接**: https://github.com/Shawn-Skywolfer/LLM-Concil
+**项目链接**: https://github.com/Shawn-Skywolfer/LLM-Council
